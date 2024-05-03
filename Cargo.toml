@@ -1,0 +1,16 @@
+[package]
+name = "normal_to_height"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bresenham = "0.1.1"
+either = "1.11.0"
+fastrand = "2.1.0"
+image = "*"
+image_dds = { version = "*", features = ["serde"] }
+itertools = "0.12.1"
+rand = "0.8.5"
+rand_distr = "0.4.3"
