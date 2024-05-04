@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 bresenham = "0.1.1"
+clap = { version = "4.5.4", features = ["derive"] }
 either = "1.11.0"
 fastrand = "2.1.0"
 image = "*"
