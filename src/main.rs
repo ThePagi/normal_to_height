@@ -94,6 +94,8 @@ fn calc_noisy(
                     noisy.get_pixel_mut(x, y).0[0] += hx;
                     noisy.get_pixel_mut(x, y).0[1] -= hy;
                 }
+                noisy.get_pixel_mut(xx, yy).0[0] += prevx;
+                noisy.get_pixel_mut(xx, yy).0[1] -= prevy;
             }
         }
     }
@@ -153,7 +155,19 @@ fn calc_ddm(
     //normalize(&mut vern);
     //let vern = imageops::filter3x3(&vern, &[0., 0., 0., 0.4, 0.8, 0.4, 0., 0., 0.]);
     //let  vern = imageops::blur(&ver, 1.0);
-
+    
+    //for y in 0..img.height() {
+    //    for x in 0..img.width() {
+    //        hor.get_pixel_mut(x, y).0[0] *= 1.0 - x as f32 / img.width() as f32;
+    //        hor.get_pixel_mut(x, y).0[1] *= 1.0 - x as f32 / img.width() as f32;
+    //        horn.get_pixel_mut(x, y).0[0] *= x as f32 / img.width() as f32;
+    //        horn.get_pixel_mut(x, y).0[1] *= x as f32 / img.width() as f32;
+    //        ver.get_pixel_mut(x, y).0[0] *= 1.0 - y as f32 / img.height() as f32;
+    //        ver.get_pixel_mut(x, y).0[1] *= 1.0 - y as f32 / img.height() as f32;
+    //        vern.get_pixel_mut(x, y).0[0] *= y as f32 / img.height() as f32;
+    //        vern.get_pixel_mut(x, y).0[1] *= y as f32 / img.height() as f32;
+    //    }
+    //}
     for (i, p) in hor.as_flat_samples_mut().samples.iter_mut().enumerate() {
         *p += horn.as_flat_samples().as_slice()[i];
         *p += ver.as_flat_samples().as_slice()[i];
