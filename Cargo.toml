@@ -13,5 +13,7 @@ fastrand = "2.1.0"
 image = "*"
 image_dds = { version = "*", features = ["serde"] }
 itertools = "0.12.1"
+lazy_static = "1.4.0"
 rand = "0.8.5"
 rand_distr = "0.4.3"
+wild = "2.2.1"
