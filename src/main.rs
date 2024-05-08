@@ -5,8 +5,6 @@ use image::imageops::FilterType::{CatmullRom, Triangle};
 use image::{imageops, DynamicImage, Rgb};
 use image::{io::Reader as ImageReader, ImageBuffer, Luma};
 
-
-
 use std::error::Error;
 use std::f32::consts::PI;
 
@@ -35,7 +33,8 @@ struct Args {
     // exponential decay, decays after ~1/128 of the image
     #[arg(short = 'd', long = "decay", default_value_t = 128.0)]
     decay: f32,
-
+    #[arg(long = "ao_decay", default_value_t = 256.0)]
+    ao_decay: f32,
     // the amount of gaussian blur (sigma)
     #[arg(short = 'b', long = "blur", default_value_t = 1.0)]
     blur: f32,
@@ -123,10 +122,7 @@ fn calc_noisy(
     //noisy.clone()
 }
 
-fn calc_ddm(
-    img: &ImageBuffer<Rgb<f32>, Vec<f32>>,
-    decay: f32,
-) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
+fn calc_ddm(img: &ImageBuffer<Rgb<f32>, Vec<f32>>, decay: f32) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
     let mut hor = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(img.width(), img.height());
     let mut horn = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(img.width(), img.height());
     let mut ver = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(img.width(), img.height());
@@ -198,8 +194,8 @@ fn calc_ddm(
         for x in 1..hor.width() {
             let lx = (hor.width() as i32 / 2 - x as i32).max(0);
             let ly = (hor.height() as i32 / 2 - y as i32).max(0);
-            let mut lerpx = (lx as f32 *2.0 / hor.width() as f32).powf(2.0);
-            let mut lerpy = (ly as f32 *2.0 / hor.height() as f32).powf(2.0);
+            let mut lerpx = (lx as f32 * 2.0 / hor.width() as f32).powf(2.0);
+            let mut lerpy = (ly as f32 * 2.0 / hor.height() as f32).powf(2.0);
             lerpx /= (lerpx + lerpy).max(1.0);
             lerpy /= (lerpx + lerpy).max(1.0);
             hor.get_pixel_mut(x, y).0[0] = hor.get_pixel_mut(x, y).0[0] * (1.0 - lerpx - lerpy)
@@ -233,36 +229,33 @@ fn wrapped(ind: u32, lim: u32) -> u32 {
 }
 
 fn process_ao(
-    img: &ImageBuffer<Rgb<f32>, Vec<f32>>, filename: String
-)  -> Result<(), Box<dyn Error>>{
-    let res = calc_ddm(img, 1.0 - (256.0 / img.width() as f32));
-    let vec: Vec<f32> = res.pixels()
-            .map(|v| v.0.iter().sum::<f32>())
-            .collect();
-    let mut res = ImageBuffer::<Luma<f32>, Vec<f32>>::from_vec(img.width(), img.height(), vec).unwrap();
+    img: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    filename: String,
+) -> Result<(), Box<dyn Error>> {
+    let res = calc_ddm(img, 1.0 - (ARGS.ao_decay / img.width() as f32));
+    let vec: Vec<f32> = res.pixels().map(|v| v.0.iter().sum::<f32>()).collect();
+    let mut res =
+        ImageBuffer::<Luma<f32>, Vec<f32>>::from_vec(img.width(), img.height(), vec).unwrap();
     normalize_luma(&mut res);
-    let vec: Vec<u8> = res.as_flat_samples()
-    .samples.iter()
-        .map(|v| ((*v).mul(2.0).min(1.0) * u8::MAX as f32) as u8)
+    let vec: Vec<u8> = res
+        .as_flat_samples()
+        .samples
+        .iter()
+        .map(|v| ((*v).powf(1.1).min(0.5).mul(2.0) * u8::MAX as f32) as u8)
         .collect();
     println!("Saving: {filename}_ao.png");
-    ImageBuffer::<Luma<u8>, Vec<u8>>::from_vec(img.width(), img.height(), vec).unwrap().save(filename + "_ao.png")?;
+    ImageBuffer::<Luma<u8>, Vec<u8>>::from_vec(img.width(), img.height(), vec)
+        .unwrap()
+        .save(filename + "_ao.png")?;
     Ok(())
 }
 
-fn process_height(origimg: &ImageBuffer<Rgb<f32>, Vec<f32>>, filename: String) -> Result<(), Box<dyn Error>> {
-
-    let glob_detail = calc_ddm(
-        &origimg,
-        1.0 - (ARGS.decay / origimg.width() as f32),
-    );
+fn process_height(
+    origimg: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    filename: String,
+) -> Result<(), Box<dyn Error>> {
 
     let mut hmap = ImageBuffer::<Luma<f32>, Vec<f32>>::new(origimg.width(), origimg.height());
-    for yy in 0..origimg.height() {
-        for xx in 0..origimg.width() {
-            hmap.get_pixel_mut(xx, yy).0[0] = glob_detail.get_pixel(xx, yy).0.iter().sum::<f32>();
-        }
-    }
     if ARGS.global_height {
         let tiny = imageops::resize(
             origimg,
@@ -279,8 +272,15 @@ fn process_height(origimg: &ImageBuffer<Rgb<f32>, Vec<f32>>, filename: String) -
         for yy in 0..origimg.height() {
             for xx in 0..origimg.width() {
                 hmap.get_pixel_mut(xx, yy).0[0] +=
-                    0.25 * glob_blurry.get_pixel(xx, yy).0.iter().sum::<f32>();
+                     glob_blurry.get_pixel(xx, yy).0.iter().sum::<f32>();
             }
+        }
+    }
+
+    let glob_detail = calc_ddm(&origimg, 1.0 - (ARGS.decay / origimg.width() as f32));
+    for yy in 0..origimg.height() {
+        for xx in 0..origimg.width() {
+            hmap.get_pixel_mut(xx, yy).0[0] += glob_detail.get_pixel(xx, yy).0.iter().sum::<f32>()*0.5;
         }
     }
     normalize_luma(&mut hmap);
@@ -299,7 +299,7 @@ fn process_height(origimg: &ImageBuffer<Rgb<f32>, Vec<f32>>, filename: String) -
         for xx in 0..origimg.width() {
             let o = hmap.get_pixel(xx, yy).0[0];
             let n = noisy_detail.get_pixel(xx, yy).0.iter().sum::<f32>();
-            hmap.get_pixel_mut(xx, yy).0[0] = o + n;
+            hmap.get_pixel_mut(xx, yy).0[0] = o + n*0.5;
         }
     }
     normalize_luma(&mut hmap);
@@ -353,16 +353,28 @@ fn run() -> Result<(), Box<dyn Error>> {
             continue;
         }
         println!("Processing: {input}");
-        let filename = input.strip_suffix(Path::new(&input).extension().unwrap().to_str().unwrap())
-            .unwrap()
-            .strip_suffix(".").unwrap()
+        let filename = input
+            .strip_suffix(
+                Path::new(&input)
+                    .extension()
+                    .unwrap_or_default()
+                    .to_str()
+                    .unwrap(),
+            )
+            .unwrap_or_default()
+            .strip_suffix(".")
+            .unwrap_or_default()
             .replace("_n", "");
-        let img = ImageReader::open(input)?.decode()?.to_rgb32f();
-        if ARGS.calculate_height{
-        process_height(&img, filename.clone())?;
+        if !std::path::Path::new(input).exists() {
+            println!("File {input} does not exist!");
+            continue;
         }
-        if ARGS.calculate_ao{
-        process_ao(&img, filename)?;
+        let img = ImageReader::open(input)?.decode()?.to_rgb32f();
+        if ARGS.calculate_height {
+            process_height(&img, filename.clone())?;
+        }
+        if ARGS.calculate_ao {
+            process_ao(&img, filename)?;
         }
     }
     Ok(())
