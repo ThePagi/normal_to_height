@@ -2,7 +2,7 @@ use bresenham::Bresenham;
 use clap::Parser;
 
 use image::imageops::FilterType::{CatmullRom, Triangle};
-use image::{imageops, DynamicImage, Rgb};
+use image::{imageops, DynamicImage, GenericImageView, Rgb};
 use image::{io::Reader as ImageReader, ImageBuffer, Luma};
 
 use std::error::Error;
@@ -27,6 +27,8 @@ struct Args {
     noisy_iterations: i32,
     #[arg(short = 'r', long = "range", default_value_t = 21.0)]
     noisy_range: f32,
+    #[arg(short = 'o', long = "overlapped", default_value_t = 5)]
+    overlapped_iterations: u32,
     #[arg(short = 'p', long = "precise")]
     precise: bool,
 
@@ -38,6 +40,11 @@ struct Args {
     // the amount of gaussian blur (sigma)
     #[arg(short = 'b', long = "blur", default_value_t = 1.0)]
     blur: f32,
+
+    #[arg(long = "dx")]
+    directx: bool,
+    #[arg(short = 's', long = "downscale", default_value_t = 1)]
+    downscale: u32,
 }
 
 lazy_static::lazy_static! {
@@ -56,10 +63,37 @@ fn normalize(img: &mut ImageBuffer<Rgb<f32>, Vec<f32>>) {
             max = *p;
         }
     }
-    img.as_flat_samples_mut()
-        .samples
-        .iter_mut()
-        .for_each(|v| *v = (*v - min) / (max - min));
+    if (max - min).abs() > f32::EPSILON {
+        img.as_flat_samples_mut()
+            .samples
+            .iter_mut()
+            .for_each(|v| *v = (*v - min) / (max - min));
+        println!("Normalizing {min}, {max}");
+    } else {
+        println!("min == max");
+    }
+}
+
+fn normalize_around_zero(img: &mut ImageBuffer<Rgb<f32>, Vec<f32>>) {
+    let mut min = f32::MAX;
+    let mut max = f32::MIN;
+    for p in img.as_flat_samples().samples.iter() {
+        if *p < min {
+            min = *p;
+        }
+        if *p > max {
+            max = *p;
+        }
+    }
+    if (max - min).abs() > f32::EPSILON {
+        img.as_flat_samples_mut()
+            .samples
+            .iter_mut()
+            .for_each(|v| *v = 2.0 * (*v - min) / (max - min) - 1.0);
+        println!("Normalizing {min}, {max}");
+    } else {
+        println!("min == max");
+    }
 }
 
 fn normalize_luma(img: &mut ImageBuffer<Luma<f32>, Vec<f32>>) {
@@ -73,11 +107,15 @@ fn normalize_luma(img: &mut ImageBuffer<Luma<f32>, Vec<f32>>) {
             max = *p;
         }
     }
-    img.as_flat_samples_mut()
-        .samples
-        .iter_mut()
-        .for_each(|v| *v = (*v - min) / (max - min));
-    println!("{min}, {max}");
+    if (max - min).abs() > f32::EPSILON {
+        img.as_flat_samples_mut()
+            .samples
+            .iter_mut()
+            .for_each(|v| *v = (*v - min) / (max - min));
+        println!("Normalizing {min}, {max}");
+    } else {
+        println!("min == max");
+    }
 }
 
 fn calc_noisy(
@@ -122,7 +160,12 @@ fn calc_noisy(
     //noisy.clone()
 }
 
-fn calc_ddm(img: &ImageBuffer<Rgb<f32>, Vec<f32>>, decay: f32) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
+fn calc_ddm(
+    img: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    decay: f32,
+    offsetx: u32,
+    offsety: u32,
+) -> ImageBuffer<Luma<f32>, Vec<f32>> {
     let mut hor = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(img.width(), img.height());
     let mut horn = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(img.width(), img.height());
     let mut ver = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(img.width(), img.height());
@@ -131,44 +174,52 @@ fn calc_ddm(img: &ImageBuffer<Rgb<f32>, Vec<f32>>, decay: f32) -> ImageBuffer<Rg
     //(1.0 - (16.0 / img.width() as f32));//(-16.0 / (img.width() as f32)).exp();
     println!("{decay}");
     let mult = 2.0;
-    for y in 1..img.height() {
-        for x in 1..img.width() {
-            hor.get_pixel_mut(x, y).0[0] += (hor.get_pixel(x - 1, y).0[0]) * decay
-                + ((0.5 - img.get_pixel(x - 1, y).0[0] as f32) * mult);
-            ver.get_pixel_mut(x, y).0[0] += (ver.get_pixel(x, y - 1).0[0]) * decay
-                + ((img.get_pixel(x, y - 1).0[1] as f32 - 0.5) * mult);
-            hor.get_pixel_mut(x, y).0[1] += (hor.get_pixel(x - 1, y - 1).0[1]) * decay
-                + ((0.5 - img.get_pixel(x - 1, y - 1).0[0] as f32) * mult);
-            ver.get_pixel_mut(x, y).0[1] += (ver.get_pixel(x - 1, y - 1).0[1]) * decay
-                + ((img.get_pixel(x - 1, y - 1).0[1] as f32 - 0.5) * mult);
+    for y in (1 + offsety)..(img.height() + offsety) {
+        let y = wrapped(y, img.height());
+        for x in (1 + offsetx)..(img.width() + offsetx) {
+            let x = wrapped(x, img.width());
+            let xl = wrapped(x - 1, img.width());
+            let yl = wrapped(y - 1, img.height());
+            hor.get_pixel_mut(x, y).0[0] += (hor.get_pixel(xl, y).0[0]) * decay
+                + ((0.5 - img.get_pixel(xl, y).0[0] as f32) * mult);
+            ver.get_pixel_mut(x, y).0[0] += (ver.get_pixel(x, yl).0[0]) * decay
+                + ((img.get_pixel(x, yl).0[1] as f32 - 0.5) * mult);
+            hor.get_pixel_mut(x, y).0[1] += (hor.get_pixel(xl, yl).0[1]) * decay
+                + ((0.5 - img.get_pixel(xl, yl).0[0] as f32) * mult);
+            ver.get_pixel_mut(x, y).0[1] += (ver.get_pixel(xl, yl).0[1]) * decay
+                + ((img.get_pixel(xl, yl).0[1] as f32 - 0.5) * mult);
         }
     }
 
-    for y in 1..img.height() {
+    for y in (1 + offsety)..(img.height() + offsety) {
         let y = img.height() - y - 1;
-        for x in 1..img.width() {
+        let y = wrapped(y, img.height());
+        for x in (1 + offsetx)..(img.width() + offsetx) {
             let x = img.width() - x - 1;
-            horn.get_pixel_mut(x, y).0[0] += (horn.get_pixel(x + 1, y).0[0]) * decay
-                + ((img.get_pixel(x + 1, y).0[0] as f32 - 0.5) * mult);
-            vern.get_pixel_mut(x, y).0[0] += (vern.get_pixel(x, y + 1).0[0]) * decay
-                + ((0.5 - img.get_pixel(x, y + 1).0[1] as f32) * mult);
-            horn.get_pixel_mut(x, y).0[1] += (horn.get_pixel(x + 1, y + 1).0[1]) * decay
-                + ((img.get_pixel(x + 1, y + 1).0[0] as f32 - 0.5) * mult);
-            vern.get_pixel_mut(x, y).0[1] += (vern.get_pixel(x + 1, y + 1).0[1]) * decay
-                + ((0.5 - img.get_pixel(x + 1, y + 1).0[1] as f32) * mult);
+            let x = wrapped(x, img.width());
+            let xl = wrapped(x + 1, img.width());
+            let yl = wrapped(y + 1, img.height());
+            horn.get_pixel_mut(x, y).0[0] += (horn.get_pixel(xl, y).0[0]) * decay
+                + ((img.get_pixel(xl, y).0[0] as f32 - 0.5) * mult);
+            vern.get_pixel_mut(x, y).0[0] += (vern.get_pixel(x, yl).0[0]) * decay
+                + ((0.5 - img.get_pixel(x, yl).0[1] as f32) * mult);
+            horn.get_pixel_mut(x, y).0[1] += (horn.get_pixel(xl, yl).0[1]) * decay
+                + ((img.get_pixel(xl, yl).0[0] as f32 - 0.5) * mult);
+            vern.get_pixel_mut(x, y).0[1] += (vern.get_pixel(xl, yl).0[1]) * decay
+                + ((0.5 - img.get_pixel(xl, yl).0[1] as f32) * mult);
         }
     }
 
-    normalize(&mut hor);
+    //normalize_around_zero(&mut hor);
     //let mut hor = imageops::filter3x3(&hor, &[0., 0.4, 0., 0., 0.8, 0., 0., 0.4, 0.]);
     //let mut hor = imageops::blur(&hor, 1.0);
-    normalize(&mut ver);
+    //normalize_around_zero(&mut ver);
     //let mut ver = imageops::filter3x3(&ver, &[0., 0., 0., 0.4, 0.8, 0.4, 0., 0., 0.]);
     //let  ver = imageops::blur(&ver, 1.0);
-    normalize(&mut horn);
+    //normalize_around_zero(&mut horn);
     //let horn = imageops::filter3x3(&horn, &[0., 0.4, 0., 0., 0.8, 0., 0., 0.4, 0.]);
     //let mut horn = imageops::blur(&horn, 1.0);
-    normalize(&mut vern);
+    //normalize_around_zero(&mut vern);
     //let vern = imageops::filter3x3(&vern, &[0., 0., 0., 0.4, 0.8, 0.4, 0., 0., 0.]);
     //let  vern = imageops::blur(&ver, 1.0);
 
@@ -184,44 +235,54 @@ fn calc_ddm(img: &ImageBuffer<Rgb<f32>, Vec<f32>>, decay: f32) -> ImageBuffer<Rg
     //        vern.get_pixel_mut(x, y).0[1] *= y as f32 / img.height() as f32;
     //    }
     //}
-    for (i, p) in hor.as_flat_samples_mut().samples.iter_mut().enumerate() {
-        *p += horn.as_flat_samples().as_slice()[i];
-        *p += ver.as_flat_samples().as_slice()[i];
-        *p += vern.as_flat_samples().as_slice()[i];
-    }
 
-    for y in 1..hor.height() {
-        for x in 1..hor.width() {
-            let lx = (hor.width() as i32 / 2 - x as i32).max(0);
-            let ly = (hor.height() as i32 / 2 - y as i32).max(0);
-            let mut lerpx = (lx as f32 * 2.0 / hor.width() as f32).powf(2.0);
-            let mut lerpy = (ly as f32 * 2.0 / hor.height() as f32).powf(2.0);
-            lerpx /= (lerpx + lerpy).max(1.0);
-            lerpy /= (lerpx + lerpy).max(1.0);
-            hor.get_pixel_mut(x, y).0[0] = hor.get_pixel_mut(x, y).0[0] * (1.0 - lerpx - lerpy)
-                + hor.get_pixel_mut(img.width() - x - 1, y).0[0] * lerpx
-                + hor.get_pixel_mut(x, img.height() - y - 1).0[0] * lerpy;
+    let mut res = ImageBuffer::<Luma<f32>, Vec<f32>>::new(img.width(), img.height());
+    for y in 0..res.height() {
+        for x in 0..res.width() {
+            res.get_pixel_mut(x, y).0[0] += hor.get_pixel(x, y).0.iter().sum::<f32>();
+            res.get_pixel_mut(x, y).0[0] += horn.get_pixel(x, y).0.iter().sum::<f32>();
+            res.get_pixel_mut(x, y).0[0] += ver.get_pixel(x, y).0.iter().sum::<f32>();
+            res.get_pixel_mut(x, y).0[0] += vern.get_pixel(x, y).0.iter().sum::<f32>();
+            res.get_pixel_mut(x, y).0[0] /= 8.0;
         }
     }
 
-    //for y in 0..img.height(){
-    //    let p0 = (hor.get_pixel(0, y).0[0] + hor.get_pixel(img.width()-1, y).0[0])*0.5;
-    //    let p1 = (hor.get_pixel(0, y).0[1] + hor.get_pixel(img.width()-1, y).0[1])*0.5;
-    //    hor.get_pixel_mut(0, y).0[0] = p0;
-    //    hor.get_pixel_mut(img.width()-1, y).0[0] = p0;
-    //    hor.get_pixel_mut(0, y).0[1] = p1;
-    //    hor.get_pixel_mut(img.width()-1, y).0[1] = p1;
-    //}
-    //for x in 0..img.width(){
-    //    let p0 = (hor.get_pixel(x, 0).0[0] + hor.get_pixel(x, img.height()-1).0[0])*0.5;
-    //    let p1 = (hor.get_pixel(x, 0).0[1] + hor.get_pixel(x, img.height()-1).0[1])*0.5;
-    //    hor.get_pixel_mut(x, 0).0[0] = p0;
-    //    hor.get_pixel_mut(x, img.height()-1).0[0] = p0;
-    //    hor.get_pixel_mut(x, 0).0[1] = p1;
-    //    hor.get_pixel_mut(x, img.height()-1).0[1] = p1;
-    //}
-    normalize(&mut hor);
-    return hor;
+    for y in (offsety)..(img.height() + offsety) {
+        //let y = wrapped(y, img.height());
+        for x in (offsetx)..(img.width() + offsetx) {
+            //let x = wrapped(x, img.width());
+            let distx = 1.0
+                - ((img.width() / 2 + offsetx) as f32 - x as f32).abs() * 2. / img.width() as f32;
+            let disty = 1.0
+                - ((img.height() / 2 + offsety) as f32 - y as f32).abs() * 2. / img.height() as f32;
+            res.get_pixel_mut(wrapped(x, img.width()), wrapped(y, img.height()))
+                .0[0] *= distx.min(disty).powf(0.4);
+        }
+    }
+
+    //normalize_luma(&mut res);
+    return res;
+}
+
+fn calc_ddm_overlapped(
+    img: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    decay: f32,
+    count: u32,
+) -> ImageBuffer<Luma<f32>, Vec<f32>> {
+    let mut res = ImageBuffer::<Luma<f32>, Vec<f32>>::new(img.width(), img.height());
+    for i in 0..count {
+        let ddm = calc_ddm(
+            img,
+            decay,
+            i * (7 + img.width() / count),
+            i * (7 + img.height() / count),
+        );
+        for (j, p) in res.as_flat_samples_mut().samples.iter_mut().enumerate() {
+            *p += ddm.as_flat_samples().as_slice()[j];
+        }
+    }
+    //normalize_luma(&mut res);
+    res
 }
 
 fn wrapped(ind: u32, lim: u32) -> u32 {
@@ -232,10 +293,11 @@ fn process_ao(
     img: &ImageBuffer<Rgb<f32>, Vec<f32>>,
     filename: String,
 ) -> Result<(), Box<dyn Error>> {
-    let res = calc_ddm(img, 1.0 - (ARGS.ao_decay / img.width() as f32));
-    let vec: Vec<f32> = res.pixels().map(|v| v.0.iter().sum::<f32>()).collect();
-    let mut res =
-        ImageBuffer::<Luma<f32>, Vec<f32>>::from_vec(img.width(), img.height(), vec).unwrap();
+    let mut res: ImageBuffer<Luma<f32>, Vec<f32>> = calc_ddm_overlapped(
+        img,
+        1.0 - (ARGS.ao_decay / img.width() as f32),
+        ARGS.overlapped_iterations,
+    );
     normalize_luma(&mut res);
     let vec: Vec<u8> = res
         .as_flat_samples()
@@ -254,17 +316,17 @@ fn process_height(
     origimg: &ImageBuffer<Rgb<f32>, Vec<f32>>,
     filename: String,
 ) -> Result<(), Box<dyn Error>> {
-
     let mut hmap = ImageBuffer::<Luma<f32>, Vec<f32>>::new(origimg.width(), origimg.height());
     if ARGS.global_height {
+        let ds = 64;
         let tiny = imageops::resize(
             origimg,
-            origimg.width() / 128,
-            origimg.height() / 128,
+            origimg.width() / ds,
+            origimg.height() / ds,
             Triangle,
         );
         let glob_blurry = imageops::resize(
-            &calc_ddm(&tiny, 0.95),
+            &calc_ddm_overlapped(&tiny, 0.95, ARGS.overlapped_iterations),
             origimg.width(),
             origimg.height(),
             CatmullRom,
@@ -272,15 +334,20 @@ fn process_height(
         for yy in 0..origimg.height() {
             for xx in 0..origimg.width() {
                 hmap.get_pixel_mut(xx, yy).0[0] +=
-                     glob_blurry.get_pixel(xx, yy).0.iter().sum::<f32>();
+                    glob_blurry.get_pixel(xx, yy).0.iter().sum::<f32>()*ds as f32;
             }
         }
     }
 
-    let glob_detail = calc_ddm(&origimg, 1.0 - (ARGS.decay / origimg.width() as f32));
+    let glob_detail = calc_ddm_overlapped(
+        &origimg,
+        1.0 - (ARGS.decay / origimg.width() as f32),
+        ARGS.overlapped_iterations,
+    );
     for yy in 0..origimg.height() {
         for xx in 0..origimg.width() {
-            hmap.get_pixel_mut(xx, yy).0[0] += glob_detail.get_pixel(xx, yy).0.iter().sum::<f32>()*0.5;
+            hmap.get_pixel_mut(xx, yy).0[0] +=
+                glob_detail.get_pixel(xx, yy).0.iter().sum::<f32>();
         }
     }
     normalize_luma(&mut hmap);
@@ -295,11 +362,14 @@ fn process_height(
         ARGS.noisy_iterations,
     );
     //let noisy_detail = imageops::blur(&noisy_detail, 5.);
+    let m1 = ARGS.overlapped_iterations as f32*ARGS.decay.sqrt();
+    let m2 = ARGS.noisy_iterations as f32*ARGS.noisy_range.sqrt();
     for yy in 0..origimg.height() {
         for xx in 0..origimg.width() {
             let o = hmap.get_pixel(xx, yy).0[0];
             let n = noisy_detail.get_pixel(xx, yy).0.iter().sum::<f32>();
-            hmap.get_pixel_mut(xx, yy).0[0] = o + n*0.5;
+            hmap.get_pixel_mut(xx, yy).0[0] =
+                o * m1 + n * m2;
         }
     }
     normalize_luma(&mut hmap);
@@ -369,7 +439,14 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!("File {input} does not exist!");
             continue;
         }
-        let img = ImageReader::open(input)?.decode()?.to_rgb32f();
+        let img = ImageReader::open(input)?.decode()?;
+        let img = img.resize(img.width()/ARGS.downscale, img.height()/ARGS.downscale, imageops::FilterType::Gaussian);
+        let mut img = img.to_rgb32f();
+        if ARGS.directx{
+            for p in img.pixels_mut(){
+                p.0[1] = 1.0-p.0[1];
+            }
+        }
         if ARGS.calculate_height {
             process_height(&img, filename.clone())?;
         }
