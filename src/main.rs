@@ -1,7 +1,7 @@
 use bresenham::Bresenham;
 use clap::Parser;
 
-use image::imageops::FilterType::{CatmullRom, Triangle};
+use image::imageops::FilterType::{CatmullRom, Gaussian, Triangle};
 use image::{imageops, DynamicImage, GenericImageView, Rgb};
 use image::{io::Reader as ImageReader, ImageBuffer, Luma};
 
@@ -15,35 +15,42 @@ use std::path::Path;
 #[command(version, about, long_about = None)]
 struct Args {
     paths: Vec<String>,
-
+    /// Should calculate height/displacement/parallax map? Will be save with _p suffix.
     #[arg(short = 'h', long = "height")]
     calculate_height: bool,
+    /// Should calculate ambient occlusion map? Will be save with _ap suffix.
     #[arg(short = 'a', long = "ao")]
     calculate_ao: bool,
+    /// Computes downscaled passes to better approximate global differences in height.
     #[arg(short = 'g', long = "global")]
     global_height: bool,
 
+    /// The number of passes each pixel gets while computing noisy height.
     #[arg(short = 'i', long = "iters", default_value_t = 4)]
     noisy_iterations: i32,
+    /// The range of the ray used in noisy height.
     #[arg(short = 'r', long = "range", default_value_t = 21.0)]
     noisy_range: f32,
-    #[arg(short = 'o', long = "overlapped", default_value_t = 5)]
+    /// The number of passes when computing height over the axes. Removes tiling issues.
+    #[arg(short = 'o', long = "overlap", default_value_t = 5)]
     overlapped_iterations: u32,
-    #[arg(short = 'p', long = "precise")]
+    /// Saves height to a 16bit PNG instead of 8bit.
+    #[arg(long = "precise")]
     precise: bool,
 
-    // exponential decay, decays after ~1/128 of the image
-    #[arg(short = 'd', long = "decay", default_value_t = 128.0)]
+    /// Exponential decay when computing height over the axes. Higher = faster decay.
+    #[arg(long = "decay", default_value_t = 128.0)]
     decay: f32,
+    // Exponential decay when computing AO. Higher = faster decay.
     #[arg(long = "ao_decay", default_value_t = 256.0)]
     ao_decay: f32,
-    // the amount of gaussian blur (sigma)
+    /// The amount (sigma value) of gaussian blur applied to height.
     #[arg(short = 'b', long = "blur", default_value_t = 1.0)]
     blur: f32,
 
     #[arg(long = "dx")]
     directx: bool,
-    #[arg(short = 's', long = "downscale", default_value_t = 1)]
+    #[arg(short = 'd', long = "downscale", default_value_t = 1)]
     downscale: u32,
 }
 
@@ -318,23 +325,25 @@ fn process_height(
 ) -> Result<(), Box<dyn Error>> {
     let mut hmap = ImageBuffer::<Luma<f32>, Vec<f32>>::new(origimg.width(), origimg.height());
     if ARGS.global_height {
-        let ds = 64;
-        let tiny = imageops::resize(
-            origimg,
-            origimg.width() / ds,
-            origimg.height() / ds,
-            Triangle,
-        );
-        let glob_blurry = imageops::resize(
-            &calc_ddm_overlapped(&tiny, 0.95, ARGS.overlapped_iterations),
-            origimg.width(),
-            origimg.height(),
-            CatmullRom,
-        );
-        for yy in 0..origimg.height() {
-            for xx in 0..origimg.width() {
-                hmap.get_pixel_mut(xx, yy).0[0] +=
-                    glob_blurry.get_pixel(xx, yy).0.iter().sum::<f32>()*ds as f32;
+        for i in 0..(origimg.width().min(origimg.height()).ilog2()) {
+            let ds = 2u32.pow(i + 1);
+            let tiny = imageops::resize(
+                origimg,
+                origimg.width() / ds,
+                origimg.height() / ds,
+                CatmullRom,
+            );
+            let glob_blurry = imageops::resize(
+                &calc_ddm_overlapped(&tiny, 1.0 - (ARGS.decay / tiny.width() as f32), ARGS.overlapped_iterations),
+                origimg.width(),
+                origimg.height(),
+                CatmullRom,
+            );
+            for yy in 0..origimg.height() {
+                for xx in 0..origimg.width() {
+                    hmap.get_pixel_mut(xx, yy).0[0] +=
+                        glob_blurry.get_pixel(xx, yy).0.iter().sum::<f32>() * ds as f32/(i as f32 +1.);
+                }
             }
         }
     }
@@ -346,8 +355,7 @@ fn process_height(
     );
     for yy in 0..origimg.height() {
         for xx in 0..origimg.width() {
-            hmap.get_pixel_mut(xx, yy).0[0] +=
-                glob_detail.get_pixel(xx, yy).0.iter().sum::<f32>();
+            hmap.get_pixel_mut(xx, yy).0[0] += glob_detail.get_pixel(xx, yy).0.iter().sum::<f32>();
         }
     }
     normalize_luma(&mut hmap);
@@ -362,14 +370,13 @@ fn process_height(
         ARGS.noisy_iterations,
     );
     //let noisy_detail = imageops::blur(&noisy_detail, 5.);
-    let m1 = ARGS.overlapped_iterations as f32*ARGS.decay.sqrt();
-    let m2 = ARGS.noisy_iterations as f32*ARGS.noisy_range.sqrt();
+    let m1 = ARGS.overlapped_iterations as f32 * ARGS.decay.sqrt();
+    let m2 = ARGS.noisy_iterations as f32 * ARGS.noisy_range.sqrt();
     for yy in 0..origimg.height() {
         for xx in 0..origimg.width() {
             let o = hmap.get_pixel(xx, yy).0[0];
             let n = noisy_detail.get_pixel(xx, yy).0.iter().sum::<f32>();
-            hmap.get_pixel_mut(xx, yy).0[0] =
-                o * m1 + n * m2;
+            hmap.get_pixel_mut(xx, yy).0[0] = o * m1 + n * m2;
         }
     }
     normalize_luma(&mut hmap);
@@ -440,11 +447,15 @@ fn run() -> Result<(), Box<dyn Error>> {
             continue;
         }
         let img = ImageReader::open(input)?.decode()?;
-        let img = img.resize(img.width()/ARGS.downscale, img.height()/ARGS.downscale, imageops::FilterType::Gaussian);
+        let img = img.resize(
+            img.width() / ARGS.downscale,
+            img.height() / ARGS.downscale,
+            imageops::FilterType::Gaussian,
+        );
         let mut img = img.to_rgb32f();
-        if ARGS.directx{
-            for p in img.pixels_mut(){
-                p.0[1] = 1.0-p.0[1];
+        if ARGS.directx {
+            for p in img.pixels_mut() {
+                p.0[1] = 1.0 - p.0[1];
             }
         }
         if ARGS.calculate_height {
