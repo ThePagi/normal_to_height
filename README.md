@@ -1,7 +1,7 @@
 
 
 
-
+```
 Usage: normal_to_height.exe [OPTIONS] [PATHS]...
 
 Arguments:
@@ -36,3 +36,4 @@ Options:
           Print help
   -V, --version
           Print version
+```
