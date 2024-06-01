@@ -75,9 +75,9 @@ fn normalize(img: &mut ImageBuffer<Rgb<f32>, Vec<f32>>) {
             .samples
             .iter_mut()
             .for_each(|v| *v = (*v - min) / (max - min));
-        println!("Normalizing {min}, {max}");
+        //println!("Normalizing {min}, {max}");
     } else {
-        println!("min == max");
+        //println!("min == max");
     }
 }
 
@@ -97,9 +97,9 @@ fn normalize_around_zero(img: &mut ImageBuffer<Rgb<f32>, Vec<f32>>) {
             .samples
             .iter_mut()
             .for_each(|v| *v = 2.0 * (*v - min) / (max - min) - 1.0);
-        println!("Normalizing {min}, {max}");
+        //println!("Normalizing {min}, {max}");
     } else {
-        println!("min == max");
+        //println!("min == max");
     }
 }
 
@@ -119,9 +119,9 @@ fn normalize_luma(img: &mut ImageBuffer<Luma<f32>, Vec<f32>>) {
             .samples
             .iter_mut()
             .for_each(|v| *v = (*v - min) / (max - min));
-        println!("Normalizing {min}, {max}");
+        //println!("Normalizing {min}, {max}");
     } else {
-        println!("min == max");
+        //println!("min == max");
     }
 }
 
@@ -179,7 +179,7 @@ fn calc_ddm(
     let mut vern = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(img.width(), img.height());
 
     //(1.0 - (16.0 / img.width() as f32));//(-16.0 / (img.width() as f32)).exp();
-    println!("{decay}");
+    //println!("{decay}");
     let mult = 2.0;
     for y in (1 + offsety)..(img.height() + offsety) {
         let y = wrapped(y, img.height());
