@@ -9,9 +9,9 @@ Arguments:
 
 Options:
   -h, --height
-          Should calculate height/displacement/parallax map? Will be save with _p suffix
+          Should calculate height/displacement/parallax map? Will be saves with _p suffix
   -a, --ao
-          Should calculate ambient occlusion map? Will be save with _ap suffix
+          Should calculate ambient occlusion map? Will be saved with _ao suffix
   -g, --global
           Computes downscaled passes to better approximate global differences in height
   -i, --iters <NOISY_ITERATIONS>
